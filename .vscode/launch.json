@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:RigRelay}",
+            "name": "Debug RigRelay",
+            "target": "RigRelay",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug RigRelay"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:RigRelay}",
+            "name": "Release RigRelay",
+            "target": "RigRelay",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release RigRelay"
+        }
+    ]
+}

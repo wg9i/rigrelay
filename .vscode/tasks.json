@@ -1,0 +1,62 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Clean",
+            "type": "shell",
+            "command": "rm -rf .build RigRelay.app",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "Build Release",
+            "type": "shell",
+            "command": "swift build -c release",
+            "group": "build",
+            "dependsOn": "Clean",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": false
+            },
+            "problemMatcher": "$swiftc"
+        },
+        {
+            "label": "Assemble App Bundle",
+            "type": "shell",
+            "command": "mkdir -p RigRelay.app/Contents/MacOS RigRelay.app/Contents/Resources && cp .build/release/RigRelay RigRelay.app/Contents/MacOS/ && cp Info.plist RigRelay.app/Contents/Info.plist && cp Resources/RigRelay.icns RigRelay.app/Contents/Resources/",
+            "dependsOn": "Build Release",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": false
+            }
+        },
+        {
+            "label": "Sign App Bundle",
+            "type": "shell",
+            "command": "codesign --sign - --force --deep RigRelay.app",
+            "dependsOn": "Assemble App Bundle",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": false
+            }
+        },
+        {
+            "label": "Build and Sign",
+            "dependsOn": "Sign App Bundle",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        }
+    ]
+}
