@@ -1,4 +1,41 @@
+# macOS
+.DS_Store
 **/.DS_Store
-**/*.app
+
+# Swift Package Manager
 .build/
+.packages/
+.swiftpm/
+
+# Xcode
+*.xcworkspace
+*.xcuserdata
+*.xccheckout
+*.xcscmblueprint
+*.xcuserstate
+*.moved-aside
+*.xcdebugger
+DerivedData/
+
+# App bundles
+*.app
+
+# Resource artifacts
 Resources/RigRelay.iconset/
+
+# Temporary files
+*.swp
+*~
+*.tmp
+*.log
+
+# AI assistant / generative AI files
+CLAUDE*.md
+.claude/
+.copilot/
+.copilot-*
+.github/copilot.yml
+.github/copilot-settings.yml
+*.prompt.md
+*.instructions.md
+*.agent.md
