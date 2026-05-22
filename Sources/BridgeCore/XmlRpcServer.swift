@@ -12,6 +12,8 @@ public actor XmlRpcServer {
     public private(set) var clientCount: Int = 0
     public var onStateChange: (@Sendable (ConnectionState) -> Void)?
     public var onClientCountChange: (@Sendable (Int) -> Void)?
+    public var onClientConnected: (@Sendable (String) -> Void)?
+    public var onClientDisconnected: (@Sendable (String) -> Void)?
     public var handleRequest: (@Sendable (String, [String]) async throws -> String)?
 
     private var listener: NWListener?
@@ -107,22 +109,32 @@ public actor XmlRpcServer {
     // MARK: - Connection handling
 
     private func acceptConnection(_ conn: NWConnection) {
+        let ip = remoteAddress(conn)
         clientCount += 1
         onClientCountChange?(clientCount)
+        onClientConnected?(ip)
         conn.stateUpdateHandler = { [weak self] s in
             guard let self, case .cancelled = s else {
-                if let self, case .failed = s { Task { await self.connectionDidEnd() } }
+                if let self, case .failed = s { Task { await self.connectionDidEnd(ip: ip) } }
                 return
             }
-            Task { await self.connectionDidEnd() }
+            Task { await self.connectionDidEnd(ip: ip) }
         }
         conn.start(queue: queue)
         accumulate(conn: conn, buffer: Data())
     }
 
-    private func connectionDidEnd() {
+    private func connectionDidEnd(ip: String) {
         clientCount = max(0, clientCount - 1)
         onClientCountChange?(clientCount)
+        onClientDisconnected?(ip)
+    }
+
+    private func remoteAddress(_ conn: NWConnection) -> String {
+        if case .hostPort(let host, _) = conn.endpoint {
+            return "\(host)"
+        }
+        return "unknown"
     }
 
     /// Recursively receives chunks into `buffer` until a complete HTTP request

@@ -131,6 +131,16 @@ public final class BridgeEngine: ObservableObject {
                 self?.xmlRpcClientCount = count
             }
         }
+        await xmlRpcServer.setOnClientConnected { [weak self] ip in
+            Task { @MainActor [weak self] in
+                self?.log("flrig client connected: \(ip)")
+            }
+        }
+        await xmlRpcServer.setOnClientDisconnected { [weak self] ip in
+            Task { @MainActor [weak self] in
+                self?.log("flrig client disconnected: \(ip)")
+            }
+        }
 
         // Wire XML-RPC handler — hop to MainActor for each call so we can
         // access @MainActor-isolated state (lastRadioInfo, config, commander).
@@ -535,6 +545,12 @@ extension XmlRpcServer {
     }
     func setOnClientCountChange(_ cb: @escaping @Sendable (Int) -> Void) async {
         onClientCountChange = cb
+    }
+    func setOnClientConnected(_ cb: @escaping @Sendable (String) -> Void) async {
+        onClientConnected = cb
+    }
+    func setOnClientDisconnected(_ cb: @escaping @Sendable (String) -> Void) async {
+        onClientDisconnected = cb
     }
     func setHandleRequest(_ cb: @escaping @Sendable (String, [String]) async throws -> String) async {
         handleRequest = cb
