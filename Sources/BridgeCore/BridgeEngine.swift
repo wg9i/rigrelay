@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Combine
 
@@ -64,6 +65,8 @@ public final class BridgeEngine: ObservableObject {
     private var txMode: String? = nil
 
     private var commanderRetryTask: Task<Void, Never>?
+    private var sleepObserver: (any NSObjectProtocol)?
+    private var wakeObserver: (any NSObjectProtocol)?
 
     // MARK: - Components
 
@@ -176,6 +179,25 @@ public final class BridgeEngine: ObservableObject {
             log("N1MM listener failed: \(error.localizedDescription)", level: .error)
         }
 
+        // Observe sleep/wake so NWListener instances are cleanly torn down before
+        // sleep and restarted after wake. Without this, listeners silently stop
+        // accepting connections after a sleep/wake cycle.
+        let ws = NSWorkspace.shared.notificationCenter
+        sleepObserver = ws.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.handleSystemSleep() }
+        }
+        wakeObserver = ws.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.handleSystemWake() }
+        }
+
     }
 
     public func stop() async {
@@ -183,6 +205,9 @@ public final class BridgeEngine: ObservableObject {
         log("Stopping bridge…")
         commanderRetryTask?.cancel()
         commanderRetryTask = nil
+        let ws = NSWorkspace.shared.notificationCenter
+        if let obs = sleepObserver { ws.removeObserver(obs); sleepObserver = nil }
+        if let obs = wakeObserver  { ws.removeObserver(obs); wakeObserver = nil }
         await commander.disconnect()
         await n1mmListener.stop()
         await xmlRpcServer.stop()
@@ -206,11 +231,46 @@ public final class BridgeEngine: ObservableObject {
             }
         case .disconnected, .failed:
             if case .disconnected = serverState { return }
+            // Set synchronously before the await so that a .connected callback
+            // dispatched concurrently cannot see stale .connected state.
+            serverState = .disconnected
             log("Commander disconnected — dropping XML-RPC clients and stopping server", level: .warning)
             await xmlRpcServer.stop()
         case .connecting:
             break
         }
+    }
+
+    // MARK: - Sleep / wake
+
+    private func handleSystemSleep() async {
+        guard isRunning else { return }
+        // Cancel all NWListener/NWConnection objects before the OS drops the network.
+        // isRunning stays true so the wake handler knows to restart.
+        serverState = .disconnected
+        await xmlRpcServer.stop()
+        n1mmState = .disconnected
+        await n1mmListener.stop()
+        commanderState = .disconnected
+        await commander.disconnect()
+        log("Network listeners stopped for system sleep.", level: .warning)
+    }
+
+    private func handleSystemWake() async {
+        guard isRunning else { return }
+        log("System resumed from sleep — restarting connections…", level: .warning)
+        // Brief pause to let macOS fully restore the network stack before binding.
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        guard isRunning else { return }
+        log("Connecting to Commander at \(config.commanderHost):\(config.commanderPort)…")
+        await commander.connect(host: config.commanderHost, port: config.commanderPort)
+        do {
+            try await n1mmListener.start(host: config.n1mmHost, port: config.n1mmPort)
+            log("N1MM listener active ✓")
+        } catch {
+            log("N1MM listener restart failed: \(error.localizedDescription)", level: .error)
+        }
+        // XML-RPC server is restarted by handleCommanderStateChange(.connected).
     }
 
     // MARK: - XML-RPC dispatch
