@@ -273,13 +273,15 @@ public actor XmlRpcServer {
         "rig.get_split", "rig.set_split",
         "rig.get_pwrmeter", "rig.get_pwrmeter_scale",
         "rig.get_notch",
+        "rig.get_DBM",
         "rig.set_mode", "rig.set_modeA", "rig.set_modeB", "rig.set_bandwidth",
+        "rig.set_bwA", "rig.set_bwB",
     ]
 
     // Methods whose response is an XML-RPC array.
     // The engine returns tab-delimited values for these.
     private static let arrayMethods: Set<String> = [
-        "rig.get_bw", "rig.get_bwA",
+        "rig.get_bw", "rig.get_bwA", "rig.get_bwB",
         "rig.get_modes",
         "system.listMethods",
     ]

@@ -440,8 +440,13 @@ public final class BridgeEngine: ObservableObject {
         case "rig.get_smeter":
             return "0"
 
-        case "rig.get_bw", "rig.get_bwA":
+        case "rig.get_DBM":
+            // Faked — noise-floor dBm so clients don't display a bogus strong signal.
+            return "-120"
+
+        case "rig.get_bw", "rig.get_bwA", "rig.get_bwB":
             // Returns [currentBW, ""] as a tab-delimited array to match flrig behavior.
+            // VFO B bandwidth is faked — same value as VFO A.
             return "\(config.flrigBandwidth)\t"
 
         case "rig.get_bws":
@@ -450,7 +455,7 @@ public final class BridgeEngine: ObservableObject {
                 .joined()
             return "<array><data><value><array><data>\(options)</data></array></value></data></array>"
 
-        case "rig.set_bw", "rig.set_bandwidth":
+        case "rig.set_bw", "rig.set_bandwidth", "rig.set_bwA", "rig.set_bwB":
             guard let first = params.first else { throw BridgeError.badParam("bandwidth") }
             guard let index = Int(first), index >= 0, index < Self.bandwidthValues.count else {
                 throw BridgeError.badParam("bandwidth index")
@@ -486,11 +491,14 @@ public final class BridgeEngine: ObservableObject {
                 "rig.get_modes", "rig.get_power",
                 "rig.get_pwrmeter", "rig.get_pwrmeter_scale",
                 "rig.get_smeter",
+                "rig.get_DBM",
                 "rig.get_bws",
                 "rig.get_bw", "rig.set_bw",
                 "rig.get_notch", "rig.set_notch",
                 "rig.get_sideband",
-                "rig.get_bwA", "rig.set_bandwidth",
+                "rig.get_bwA", "rig.get_bwB",
+                "rig.set_bwA", "rig.set_bwB",
+                "rig.set_bandwidth",
                 "rig.get_AB",
                 "system.listMethods",
             ].joined(separator: "\t")
