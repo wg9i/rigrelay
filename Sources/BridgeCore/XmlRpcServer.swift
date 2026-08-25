@@ -270,12 +270,20 @@ public actor XmlRpcServer {
     // Methods whose response should be typed as <int> on the wire.
     private static let intMethods: Set<String> = [
         "rig.get_ptt", "rig.set_ptt",
-        "rig.get_split", "rig.set_split",
+        "rig.set_verify_ptt", "rig.set_ptt_fast",
+        "rig.get_split", "rig.set_split", "rig.set_verify_split",
         "rig.get_pwrmeter", "rig.get_pwrmeter_scale",
         "rig.get_notch",
+        "rig.get_rfgain", "rig.get_agc", "rig.get_micgain", "rig.get_volume",
+        "rig.set_rfgain", "rig.set_verify_rfgain",
+        "rig.set_micgain", "rig.set_verify_micgain",
+        "rig.set_volume", "rig.set_verify_volume",
+        "rig.set_power", "rig.set_verify_power",
         "rig.get_DBM",
         "rig.set_mode", "rig.set_modeA", "rig.set_modeB", "rig.set_bandwidth",
+        "rig.set_verify_mode", "rig.set_verify_modeA", "rig.set_verify_modeB",
         "rig.set_bwA", "rig.set_bwB",
+        "rig.set_verify_bw", "rig.set_verify_bandwidth",
     ]
 
     // Methods whose response is an XML-RPC array.

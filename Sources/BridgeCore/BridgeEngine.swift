@@ -64,6 +64,18 @@ public final class BridgeEngine: ObservableObject {
     // Defaults to nil (follows RX mode) until explicitly set via set_modeB.
     private var txMode: String? = nil
 
+    // Selected VFO, tracked locally — Commander has no A/B selection command.
+    // Reported back by get_AB, but frequency/mode reads always follow Commander's
+    // RX (A) / TX (B) split model regardless of this value.
+    private var selectedVfo: String = "A"
+
+    // Faked controls — Commander exposes no query or set command for any of these.
+    // Held locally only so a client reads back whatever it just wrote; nothing
+    // reaches the radio. 100 = full scale.
+    private var rfGain: Int = 100
+    private var micGain: Int = 100
+    private var volume: Int = 100
+
     private var commanderRetryTask: Task<Void, Never>?
     private var sleepObserver: (any NSObjectProtocol)?
     private var wakeObserver: (any NSObjectProtocol)?
@@ -308,7 +320,11 @@ public final class BridgeEngine: ObservableObject {
             let freq = try await commander.queryTxFreqHz()
             return "\(freq)"
 
-        case "rig.set_freq", "rig.set_vfo", "rig.set_vfoA":
+        // `rig.set_frequency` / `main.set_frequency` are flrig's canonical names;
+        // `rig.set_freq` is a non-standard alias kept for compatibility.
+        case "rig.set_freq", "rig.set_vfo", "rig.set_vfoA",
+             "rig.set_frequency", "main.set_frequency",
+             "rig.set_verify_vfoA", "rig.set_vfoA_fast":
             guard let freqHz = Double(params.first ?? "") else {
                 throw BridgeError.badParam("frequency")
             }
@@ -316,7 +332,7 @@ public final class BridgeEngine: ObservableObject {
             try await setAndVerifyFrequency(freqHz)
             return ""
 
-        case "rig.set_vfoB":
+        case "rig.set_vfoB", "rig.set_verify_vfoB", "rig.set_vfoB_fast":
             guard let freqHz = Double(params.first ?? "") else {
                 throw BridgeError.badParam("frequency")
             }
@@ -380,7 +396,8 @@ public final class BridgeEngine: ObservableObject {
             if flrigMode.hasPrefix("USB") { return "U" }
             return ""
 
-        case "rig.set_mode", "rig.set_modeA":
+        case "rig.set_mode", "rig.set_modeA",
+             "rig.set_verify_mode", "rig.set_verify_modeA":
             guard let flrigMode = params.first, !flrigMode.isEmpty else {
                 // Empty parameter: fetch current mode and re-set it to verify/sync
                 let currentCmdMode = try await commander.queryMode()
@@ -396,7 +413,7 @@ public final class BridgeEngine: ObservableObject {
             txMode = nil
             return try await setAndVerifyMode(cmdMode)
 
-        case "rig.set_modeB":
+        case "rig.set_modeB", "rig.set_verify_modeB":
             guard let flrigMode = params.first else { throw BridgeError.badParam("mode") }
             guard config.commanderModeMappings[flrigMode] != nil else {
                 throw BridgeError.unsupportedMode(flrigMode)
@@ -408,7 +425,7 @@ public final class BridgeEngine: ObservableObject {
         case "rig.get_ptt":
             return pttTransmitting ? "1" : "0"
 
-        case "rig.set_ptt":
+        case "rig.set_ptt", "rig.set_verify_ptt", "rig.set_ptt_fast":
             let on = params.first == "1"
             try await commander.send(on ? "CmdTX" : "CmdRX")
             pttTransmitting = on
@@ -421,7 +438,7 @@ public final class BridgeEngine: ObservableObject {
         case "rig.get_split":
             return try await commander.querySplit() ? "1" : "0"
 
-        case "rig.set_split":
+        case "rig.set_split", "rig.set_verify_split":
             let on = params.first == "1"
             log("Split → \(on ? "on" : "off")")
             try await commander.send("CmdSplit", params: ["1": on ? "on" : "off"])
@@ -429,6 +446,20 @@ public final class BridgeEngine: ObservableObject {
 
         case "rig.get_power":
             return "\(config.flrigPower)"
+
+        case "rig.get_pwrmax":
+            // Max power available — lets clients scale a power meter.
+            return "\(config.flrigPower)"
+
+        case "rig.set_power", "rig.set_verify_power":
+            guard let watts = Int(params.first ?? ""), watts >= 0 else {
+                throw BridgeError.badParam("power")
+            }
+            // Commander has no power command — this only updates the configured
+            // value that get_power/get_pwrmax report back.
+            log("Power → \(watts) W (local only)")
+            config.flrigPower = watts
+            return "1"
 
         case "rig.get_pwrmeter":
             return "0"
@@ -444,6 +475,10 @@ public final class BridgeEngine: ObservableObject {
             // Faked — noise-floor dBm so clients don't display a bogus strong signal.
             return "-120"
 
+        case "rig.get_Sunits":
+            // Faked — the S-unit equivalent of get_smeter 0 / get_DBM -120.
+            return "S0"
+
         case "rig.get_bw", "rig.get_bwA", "rig.get_bwB":
             // Returns [currentBW, ""] as a tab-delimited array to match flrig behavior.
             // VFO B bandwidth is faked — same value as VFO A.
@@ -455,7 +490,8 @@ public final class BridgeEngine: ObservableObject {
                 .joined()
             return "<array><data><value><array><data>\(options)</data></array></value></data></array>"
 
-        case "rig.set_bw", "rig.set_bandwidth", "rig.set_bwA", "rig.set_bwB":
+        case "rig.set_bw", "rig.set_bandwidth", "rig.set_bwA", "rig.set_bwB",
+             "rig.set_verify_bw", "rig.set_verify_bandwidth":
             guard let first = params.first else { throw BridgeError.badParam("bandwidth") }
             guard let index = Int(first), index >= 0, index < Self.bandwidthValues.count else {
                 throw BridgeError.badParam("bandwidth index")
@@ -463,49 +499,136 @@ public final class BridgeEngine: ObservableObject {
             config.flrigBandwidth = Self.bandwidthValues[index]
             return "1"
 
+        case "rig.get_rfgain":
+            return "\(rfGain)"
+
+        case "rig.set_rfgain", "rig.set_verify_rfgain":
+            rfGain = try Self.gainValue(params.first, control: "rf gain")
+            return "1"
+
+        case "rig.get_agc":
+            // Faked — Commander exposes no AGC query. 1 = AGC on.
+            return "1"
+
+        case "rig.get_micgain":
+            return "\(micGain)"
+
+        case "rig.set_micgain", "rig.set_verify_micgain":
+            micGain = try Self.gainValue(params.first, control: "mic gain")
+            return "1"
+
+        case "rig.get_volume":
+            return "\(volume)"
+
+        case "rig.set_volume", "rig.set_verify_volume":
+            volume = try Self.gainValue(params.first, control: "volume")
+            return "1"
+
+        // `rig.get_swrmeter` is flrig's real name; `rig.get_SWR` is a non-standard alias.
+        case "rig.get_SWR", "rig.get_swrmeter":
+            // Faked — Commander exposes no SWR query. flrig meters report deflection
+            // rather than the ratio, so 0 (no reflected power) is a 1:1 match.
+            return "0"
+
         case "rig.get_notch":
             return config.flrigNotch
 
-        case "rig.set_notch":
+        case "rig.set_notch", "rig.set_verify_notch":
             guard let value = params.first else { throw BridgeError.badParam("notch") }
             config.flrigNotch = value
             return "1"
 
+        case "rig.tune":
+            // Commander has no tuner command, so this cannot reach the radio.
+            // Logged as a warning rather than faulting so clients don't show an error
+            // for a button that simply has no effect here.
+            log("Tune requested — not supported via Commander, ignored", level: .warning)
+            return ""
+
         case "rig.get_AB":
-            return "A"
+            return selectedVfo
+
+        case "rig.set_AB", "rig.set_verify_AB":
+            let vfo = params.first == "B" ? "B" : "A"
+            log("Selected VFO → \(vfo)")
+            selectedVfo = vfo
+            return ""
+
+        case "rig.swap":
+            // Commander has no swap command, so exchange the two frequencies using
+            // the primitives that are known to work: CmdSetFreq (RX) + CmdQSXSplit (TX).
+            let rxHz = try await commander.queryRxFreqHz()
+            let txHz = try await commander.queryTxFreqHz()
+            log(String(format: "Swap VFOs — A %.2f kHz ↔ B %.2f kHz",
+                       Double(rxHz) / 1000, Double(txHz) / 1000))
+            try await setAndVerifyFrequency(Double(txHz))
+            try await commander.send("CmdQSXSplit", params: [
+                "xcvrfreq": String(format: "%.2f", Double(rxHz) / 1000.0),
+                "SuppressDual": "Y",
+                "SuppressModeChange": "Y"
+            ])
+            return ""
+
+        case "rig.get_info":
+            let rx = try await commander.queryRxFreqHz()
+            let cmdMode = try await commander.queryMode()
+            let mode = config.modeMappings[cmdMode] ?? cmdMode
+            return "\(config.rigName) \(rx) \(mode)"
 
         case "main.get_version":
             return "2.0.10"
 
         case "system.listMethods":
             return [
-                "main.get_version",
-                "rig.get_xcvr",
+                "main.get_version", "main.set_frequency",
+                "rig.get_xcvr", "rig.get_info",
                 "rig.get_freq", "rig.get_vfo", "rig.get_vfoA", "rig.get_vfoB",
                 "rig.set_freq", "rig.set_vfo", "rig.set_vfoA", "rig.set_vfoB",
+                "rig.set_frequency",
                 "rig.set_verify_frequency",
+                "rig.set_verify_vfoA", "rig.set_verify_vfoB",
+                "rig.set_vfoA_fast", "rig.set_vfoB_fast",
                 "rig.get_mode", "rig.get_modeA", "rig.get_modeB",
                 "rig.set_mode", "rig.set_modeA", "rig.set_modeB",
+                "rig.set_verify_mode", "rig.set_verify_modeA", "rig.set_verify_modeB",
                 "rig.get_ptt", "rig.set_ptt",
-                "rig.get_split", "rig.set_split",
-                "rig.get_modes", "rig.get_power",
+                "rig.set_verify_ptt", "rig.set_ptt_fast",
+                "rig.get_split", "rig.set_split", "rig.set_verify_split",
+                "rig.get_modes", "rig.get_power", "rig.get_pwrmax",
+                "rig.set_power", "rig.set_verify_power",
                 "rig.get_pwrmeter", "rig.get_pwrmeter_scale",
                 "rig.get_smeter",
-                "rig.get_DBM",
+                "rig.get_DBM", "rig.get_Sunits",
                 "rig.get_bws",
                 "rig.get_bw", "rig.set_bw",
-                "rig.get_notch", "rig.set_notch",
+                "rig.set_verify_bw", "rig.set_verify_bandwidth",
+                "rig.get_rfgain", "rig.set_rfgain", "rig.set_verify_rfgain",
+                "rig.get_agc",
+                "rig.get_micgain", "rig.set_micgain", "rig.set_verify_micgain",
+                "rig.get_volume", "rig.set_volume", "rig.set_verify_volume",
+                "rig.get_SWR", "rig.get_swrmeter",
+                "rig.get_notch", "rig.set_notch", "rig.set_verify_notch",
+                "rig.tune",
                 "rig.get_sideband",
                 "rig.get_bwA", "rig.get_bwB",
                 "rig.set_bwA", "rig.set_bwB",
                 "rig.set_bandwidth",
-                "rig.get_AB",
+                "rig.get_AB", "rig.set_AB", "rig.set_verify_AB",
+                "rig.swap",
                 "system.listMethods",
             ].joined(separator: "\t")
 
         default:
             throw BridgeError.unknownMethod(method)
         }
+    }
+
+    /// Parses a 0-100 control value for one of the faked gain/volume controls.
+    private static func gainValue(_ param: String?, control: String) throws -> Int {
+        guard let value = Int(param ?? ""), (0...100).contains(value) else {
+            throw BridgeError.badParam(control)
+        }
+        return value
     }
 
     // MARK: - Mode setting helper
