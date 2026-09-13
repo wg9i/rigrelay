@@ -78,6 +78,14 @@ public actor XmlRpcServer {
         case .ready:
             state = .connected
             onStateChange?(.connected)
+        case .waiting(let err):
+            // A listener can enter waiting after a network interruption without
+            // ever reporting failed. Recreate it so the server does not remain
+            // bound to a dead network path indefinitely.
+            let msg = err.localizedDescription
+            state = .failed(msg)
+            onStateChange?(.failed(msg))
+            scheduleRestart()
         case .failed(let err):
             let msg = err.localizedDescription
             state = .failed(msg)
@@ -103,7 +111,16 @@ public actor XmlRpcServer {
 
     private func retryStart() {
         guard savedPort != 0 else { return }
-        try? start(host: savedHost, port: savedPort)
+        do {
+            try start(host: savedHost, port: savedPort)
+        } catch {
+            // Binding can fail repeatedly while the network stack is recovering.
+            // Keep retrying and surface the error instead of silently giving up.
+            let msg = error.localizedDescription
+            state = .failed(msg)
+            onStateChange?(.failed(msg))
+            scheduleRestart()
+        }
     }
 
     // MARK: - Connection handling
