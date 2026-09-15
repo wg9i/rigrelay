@@ -48,6 +48,7 @@ public actor CommanderClient {
         disconnect()
         state = .connecting
         onStateChange?(.connecting)
+        receiveBuffer.removeAll(keepingCapacity: true)
 
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
@@ -62,7 +63,7 @@ public actor CommanderClient {
         conn.stateUpdateHandler = { [weak self] newState in
             guard let self else { return }
             Task {
-                await self.handleStateUpdate(newState)
+                await self.handleStateUpdate(newState, for: conn)
             }
         }
         conn.start(queue: queue)
@@ -75,7 +76,11 @@ public actor CommanderClient {
         }
     }
 
-    private func handleStateUpdate(_ nwState: NWConnection.State) {
+    private func handleStateUpdate(_ nwState: NWConnection.State, for conn: NWConnection) {
+        // NWConnection can deliver cancellation for the previous socket after
+        // a replacement connection has already been installed.
+        guard connection === conn else { return }
+
         switch nwState {
         case .ready:
             state = .connected

@@ -17,6 +17,7 @@ public actor XmlRpcServer {
     public var handleRequest: (@Sendable (String, [String]) async throws -> String)?
 
     private var listener: NWListener?
+    private var clients: [NWConnection] = []
     private let queue = DispatchQueue(label: "xmlrpc-server", qos: .userInitiated)
     private var savedHost: String = ""
     private var savedPort: Int = 0
@@ -50,11 +51,11 @@ public actor XmlRpcServer {
 
         l.stateUpdateHandler = { [weak self] newState in
             guard let self else { return }
-            Task { await self.handleListenerState(newState) }
+            Task { await self.handleListenerState(newState, for: l) }
         }
         l.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
-            Task { await self.acceptConnection(conn) }
+            Task { await self.acceptConnection(conn, from: l) }
         }
         l.start(queue: queue)
     }
@@ -65,6 +66,8 @@ public actor XmlRpcServer {
         restartTask = nil
         listener?.cancel()
         listener = nil
+        clients.forEach { $0.cancel() }
+        clients.removeAll()
         state = .disconnected
         clientCount = 0
         onStateChange?(.disconnected)
@@ -73,7 +76,11 @@ public actor XmlRpcServer {
 
     // MARK: - Listener state
 
-    private func handleListenerState(_ s: NWListener.State) {
+    private func handleListenerState(_ s: NWListener.State, for listener: NWListener) {
+        // A cancelled listener may report its final state after a replacement
+        // listener has already been created.
+        guard self.listener === listener else { return }
+
         switch s {
         case .ready:
             state = .connected
@@ -125,23 +132,31 @@ public actor XmlRpcServer {
 
     // MARK: - Connection handling
 
-    private func acceptConnection(_ conn: NWConnection) {
+    private func acceptConnection(_ conn: NWConnection, from listener: NWListener) {
+        guard self.listener === listener else {
+            conn.cancel()
+            return
+        }
+
         let ip = remoteAddress(conn)
+        clients.append(conn)
         clientCount += 1
         onClientCountChange?(clientCount)
         onClientConnected?(ip)
         conn.stateUpdateHandler = { [weak self] s in
             guard let self, case .cancelled = s else {
-                if let self, case .failed = s { Task { await self.connectionDidEnd(ip: ip) } }
+                if let self, case .failed = s { Task { await self.connectionDidEnd(ip: ip, connection: conn) } }
                 return
             }
-            Task { await self.connectionDidEnd(ip: ip) }
+            Task { await self.connectionDidEnd(ip: ip, connection: conn) }
         }
         conn.start(queue: queue)
         accumulate(conn: conn, buffer: Data())
     }
 
-    private func connectionDidEnd(ip: String) {
+    private func connectionDidEnd(ip: String, connection: NWConnection) {
+        guard let index = clients.firstIndex(where: { $0 === connection }) else { return }
+        clients.remove(at: index)
         clientCount = max(0, clientCount - 1)
         onClientCountChange?(clientCount)
         onClientDisconnected?(ip)
