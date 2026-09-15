@@ -713,13 +713,26 @@ public final class BridgeEngine: ObservableObject {
     }
 
     private func refreshCommanderRadioInfo() async {
-        if let rxHz = try? await commander.queryRxFreqHz() {
-            lastRadioInfo.freq = "\(rxHz / 10)"
+        // Do not let a delayed Commander response overwrite a newer manual
+        // tuning update received from N1MM while the query was in flight.
+        let packetGeneration = n1mmPacketGeneration
+        guard let rxHz = try? await commander.queryRxFreqHz() else {
+            return
         }
+        guard packetGeneration == n1mmPacketGeneration else {
+            debugLog("Ignoring stale Commander frequency refresh")
+            return
+        }
+        lastRadioInfo.freq = "\(rxHz / 10)"
 
-        if let cmdMode = try? await commander.queryMode() {
-            lastRadioInfo.mode = config.modeMappings[cmdMode] ?? cmdMode
+        guard let cmdMode = try? await commander.queryMode() else {
+            return
         }
+        guard packetGeneration == n1mmPacketGeneration else {
+            debugLog("Ignoring stale Commander mode refresh")
+            return
+        }
+        lastRadioInfo.mode = config.modeMappings[cmdMode] ?? cmdMode
     }
 
     // MARK: - Logging
