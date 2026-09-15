@@ -77,6 +77,11 @@ public final class BridgeEngine: ObservableObject {
     private var volume: Int = 100
 
     private var commanderRetryTask: Task<Void, Never>?
+    private var commanderRefreshTask: Task<Void, Never>?
+    private var lastN1MMPacketAt: Date?
+    private var n1mmPacketGeneration: UInt64 = 0
+    private var refreshedN1MMPacketGeneration: UInt64 = 0
+    private var lastCommanderRefreshAt: Date?
     private var sleepObserver: (any NSObjectProtocol)?
     private var wakeObserver: (any NSObjectProtocol)?
 
@@ -132,10 +137,11 @@ public final class BridgeEngine: ObservableObject {
                     self.log("N1MM: PTT → \(info.transmitting ? "ON" : "OFF")", level: .info)
                 }
 
-                let merged = await self.mergeN1MMRadioInfo(info)
-                self.lastRadioInfo = merged
+                self.lastRadioInfo = info
                 self.pttTransmitting = info.transmitting
-                self.debugLog("N1MM: \(merged.freq) daHz, mode=\(merged.mode), tx=\(info.isTransmitting)")
+                self.lastN1MMPacketAt = Date()
+                self.n1mmPacketGeneration &+= 1
+                self.debugLog("N1MM: \(info.freq) daHz, mode=\(info.mode), tx=\(info.isTransmitting)")
             }
         }
         await xmlRpcServer.setOnStateChange { [weak self] s in
@@ -181,6 +187,35 @@ public final class BridgeEngine: ObservableObject {
                 }
             }
         }
+        commanderRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard let self, self.isRunning, !Task.isCancelled else { return }
+
+                guard let lastPacketAt = self.lastN1MMPacketAt,
+                      self.n1mmPacketGeneration != self.refreshedN1MMPacketGeneration
+                else {
+                    continue
+                }
+
+                let now = Date()
+                let idleTime = now.timeIntervalSince(lastPacketAt)
+                let refreshInterval = self.lastCommanderRefreshAt.map {
+                    now.timeIntervalSince($0)
+                } ?? .infinity
+
+                // During sustained traffic, refresh no more than once per
+                // second. After traffic stops, issue one trailing refresh
+                // within 500 ms of the final N1MM packet.
+                guard refreshInterval >= 1.0 || idleTime >= 0.5 else {
+                    continue
+                }
+
+                await self.refreshCommanderRadioInfo()
+                self.lastCommanderRefreshAt = Date()
+                self.refreshedN1MMPacketGeneration = self.n1mmPacketGeneration
+            }
+        }
 
         // Start N1MM listener
         log("Starting N1MM listener on \(config.n1mmHost):\(config.n1mmPort)…")
@@ -217,6 +252,8 @@ public final class BridgeEngine: ObservableObject {
         log("Stopping bridge…")
         commanderRetryTask?.cancel()
         commanderRetryTask = nil
+        commanderRefreshTask?.cancel()
+        commanderRefreshTask = nil
         let ws = NSWorkspace.shared.notificationCenter
         if let obs = sleepObserver { ws.removeObserver(obs); sleepObserver = nil }
         if let obs = wakeObserver  { ws.removeObserver(obs); wakeObserver = nil }
@@ -637,7 +674,16 @@ public final class BridgeEngine: ObservableObject {
         try await commander.send("CmdSetMode", params: ["1": cmdMode])
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline {
-            if let verifiedMode = try? await commander.queryMode(), verifiedMode == cmdMode { break }
+            do {
+                if try await commander.queryMode() == cmdMode { break }
+            } catch let error as CommanderError {
+                switch error {
+                case .notConnected, .sendFailed, .receiveFailed, .connectionClosed:
+                    throw error
+                case .encodingError, .parseError:
+                    break
+                }
+            }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         return "1"
@@ -649,25 +695,31 @@ public final class BridgeEngine: ObservableObject {
         ])
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline {
-            if let verifiedFreq = try? await commander.queryRxFreqHz(), abs(Double(verifiedFreq) - freqHz) < 1 { break }
+            do {
+                let verifiedFreq = try await commander.queryRxFreqHz()
+                if abs(Double(verifiedFreq) - freqHz) < 1 {
+                    break
+                }
+            } catch let error as CommanderError {
+                switch error {
+                case .notConnected, .sendFailed, .receiveFailed, .connectionClosed:
+                    throw error
+                case .encodingError, .parseError:
+                    break
+                }
+            }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
     }
 
-    private func mergeN1MMRadioInfo(_ info: RadioInfo) async -> RadioInfo {
-        var merged = info
-        merged.freq = lastRadioInfo.freq
-        merged.mode = lastRadioInfo.mode
-
+    private func refreshCommanderRadioInfo() async {
         if let rxHz = try? await commander.queryRxFreqHz() {
-            merged.freq = "\(rxHz / 10)"
+            lastRadioInfo.freq = "\(rxHz / 10)"
         }
 
         if let cmdMode = try? await commander.queryMode() {
-            merged.mode = config.modeMappings[cmdMode] ?? cmdMode
+            lastRadioInfo.mode = config.modeMappings[cmdMode] ?? cmdMode
         }
-
-        return merged
     }
 
     // MARK: - Logging

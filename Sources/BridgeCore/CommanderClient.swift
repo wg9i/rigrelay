@@ -30,7 +30,7 @@ public actor CommanderClient {
     private var connection: NWConnection?
     private var receiveBuffer = Data()
     private let queue = DispatchQueue(label: "commander-tcp", qos: .userInitiated)
-    private let queryQueue = DispatchQueue(label: "commander-queries", qos: .userInitiated) // Serial queue for queries
+    private let commandGate = CommandGate()
 
     public private(set) var state: ConnectionState = .disconnected
 
@@ -111,17 +111,8 @@ public actor CommanderClient {
     /// Commander does not send a response to these commands.
     @discardableResult
     public func send(_ command: String, params: [String: String] = [:]) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            queryQueue.async {
-                Task {
-                    do {
-                        let result = try await self.performSend(command: command, params: params)
-                        continuation.resume(returning: result)
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
+        try await withCommandSlot {
+            try await self.performSend(command: command, params: params)
         }
     }
 
@@ -152,17 +143,22 @@ public actor CommanderClient {
     /// Sends a command to Commander and accumulates the response until the
     /// connection delivers a complete ADIF field, then returns the field value.
     public func query(_ command: String, params: [String: String] = [:]) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            queryQueue.async {
-                Task {
-                    do {
-                        let result = try await self.performQuery(command: command, params: params)
-                        continuation.resume(returning: result)
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
+        try await withCommandSlot {
+            try await self.performQuery(command: command, params: params)
+        }
+    }
+
+    private func withCommandSlot<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        await commandGate.acquire()
+        do {
+            let result = try await operation()
+            await commandGate.release()
+            return result
+        } catch {
+            await commandGate.release()
+            throw error
         }
     }
 
@@ -200,14 +196,14 @@ public actor CommanderClient {
         return value
     }
 
-    private func receiveChunk(from conn: NWConnection) async throws -> Data? {
+    private func receiveChunk(from conn: NWConnection) async throws -> (data: Data?, isComplete: Bool) {
         return try await withCheckedThrowingContinuation { continuation in
-            conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { content, _, _, error in
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { content, _, isComplete, error in
                 if let e = error {
                     continuation.resume(throwing: CommanderError.receiveFailed(e.localizedDescription))
                     return
                 }
-                continuation.resume(returning: content)
+                continuation.resume(returning: (content, isComplete))
             }
         }
     }
@@ -220,10 +216,13 @@ public actor CommanderClient {
                 receiveBuffer.removeFirst(parsed.consumedBytes)
                 return parsed.value
             }
-            let content = try await receiveChunk(from: conn)
-            if let data = content {
+            let chunk = try await receiveChunk(from: conn)
+            if let data = chunk.data {
                 await onLog?("Commander received \(data.count) bytes")
                 receiveBuffer.append(data)
+            }
+            if chunk.isComplete {
+                throw CommanderError.connectionClosed
             }
         }
     }
@@ -322,6 +321,7 @@ public enum CommanderError: Error, LocalizedError {
     case encodingError
     case sendFailed(String)
     case receiveFailed(String)
+    case connectionClosed
     case parseError(String)
 
     public var errorDescription: String? {
@@ -330,7 +330,32 @@ public enum CommanderError: Error, LocalizedError {
         case .encodingError:       return "Failed to encode command"
         case .sendFailed(let m):   return "Send failed: \(m)"
         case .receiveFailed(let m):return "Receive failed: \(m)"
+        case .connectionClosed:    return "Commander connection closed"
         case .parseError(let m):   return "Parse error: \(m)"
+        }
+    }
+}
+
+private actor CommandGate {
+    private var isOccupied = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !isOccupied {
+            isOccupied = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            isOccupied = false
+        } else {
+            waiters.removeFirst().resume()
         }
     }
 }
